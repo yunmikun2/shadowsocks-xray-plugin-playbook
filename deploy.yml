@@ -1,0 +1,333 @@
+---
+
+- name: Prepare server
+  hosts: servers
+  tags: [ base-prepare ]
+  tasks:
+    - name: Install base deps
+      ansible.builtin.apt:
+        name: '{{ item }}'
+      loop:
+        - gzip
+        - socat
+
+    - name: Ensure local systemd service directory exists
+      ansible.builtin.file:
+        state: directory
+        path: /usr/local/lib/systemd/system
+        mode: u=rw,o=r,g=r
+
+- name: Install acme.sh
+  hosts: servers
+  tags:
+    - acme
+    - install
+
+  vars:
+    acme_sh_version: '3.1.0'
+    acme_sh_checksum: 'sha256:5bc8a72095e16a1a177d1a516728bbd3436abf8060232d5d36b462fce74447aa'
+
+  tasks:
+    - name: Check acme.sh executable presence
+      ansible.builtin.stat:
+        path: /usr/local/bin/acme.sh
+      register: acme_sh_executable
+
+    - name: Download acme.sh
+      ansible.builtin.get_url:
+        url: 'https://github.com/acmesh-official/acme.sh/archive/refs/tags/{{ acme_sh_version }}.tar.gz'
+        checksum: '{{ acme_sh_checksum }}'
+        dest: '/tmp/acme.sh-{{ acme_sh_version }}.tar.gz'
+      when: not acme_sh_executable.stat.exists
+
+    - name: Unpack acme.sh
+      ansible.builtin.unarchive:
+        src: '/tmp/acme.sh-{{ acme_sh_version }}.tar.gz'
+        remote_src: yes
+        include:
+          - 'acme.sh-{{ acme_sh_version }}/acme.sh'
+        extra_opts:
+          - '--transform'
+          - 's/acme.sh-{{ acme_sh_version }}\/acme.sh/acme.sh/'
+        dest: /usr/local/bin
+        owner: root
+        group: root
+        mode: u=rwx,g=rx,o=rx
+      when: not acme_sh_executable.stat.exists
+
+- name: Install shadowsocks
+  hosts: servers
+  tags:
+    - shadowsocks
+    - install
+
+  vars:
+    shadowsocks_version: '1.21.2'
+    shadowsocks_checksum: 'sha256:6f88280ab5aec46ceaed41f8882dc889061b8d334ce34bee98be1fc11eb32558'
+    xray_plugin_version: '1.8.24'
+    xray_plugin_checksum: 'sha1:ae966a52c1ca24ea44baf8f6269d408936cb0807'
+
+  tasks:
+    - name: Check shadowsocks executable presence
+      ansible.builtin.stat:
+        path: /usr/local/bin/ssserver
+      register: shadowsocks_executable
+
+    - name: Download shadowsocks
+      ansible.builtin.get_url:
+        url: 'https://github.com/shadowsocks/shadowsocks-rust/releases/download/v{{ shadowsocks_version }}/shadowsocks-v{{ shadowsocks_version }}.x86_64-unknown-linux-gnu.tar.xz'
+        checksum: '{{ shadowsocks_checksum }}'
+        dest: '/tmp/shadowsocks-{{ shadowsocks_version }}.tar.xz'
+      when: not shadowsocks_executable.stat.exists
+
+    - name: Unpack shadowsocks
+      ansible.builtin.unarchive:
+        src: '/tmp/shadowsocks-{{ shadowsocks_version }}.tar.xz'
+        remote_src: yes
+        include:
+          - 'ssserver'
+        dest: /usr/local/bin
+        owner: root
+        group: root
+        mode: u=rwx,g=rx,o=rx
+      when: not shadowsocks_executable.stat.exists
+
+    - name: Check xray-plugin executable presence
+      ansible.builtin.stat:
+        path: /usr/local/bin/xray-plugin
+      register: xray_plugin_executable
+
+    - name: Download xray
+      ansible.builtin.get_url:
+        url: 'https://github.com/teddysun/xray-plugin/releases/download/v{{ xray_plugin_version }}/xray-plugin-linux-amd64-v{{ xray_plugin_version }}.tar.gz'
+        checksum: '{{ xray_plugin_checksum }}'
+        dest: '/tmp/xray-{{ xray_plugin_version }}.tar.gz'
+      when: not xray_plugin_executable.stat.exists
+
+    - name: Unpack xray
+      ansible.builtin.unarchive:
+        src: '/tmp/xray-{{ xray_plugin_version }}.tar.gz'
+        remote_src: yes
+        include:
+          - 'xray-plugin_linux_amd64'
+        extra_opts:
+          - '--transform'
+          - 's/_linux_amd64$//'
+        dest: /usr/local/bin
+        owner: root
+        group: root
+        mode: u=rwx,g=rx,o=rx
+      when: not xray_plugin_executable.stat.exists
+
+- name: Setup TLS certificate renewal
+  hosts: servers
+  tags:
+    - acme
+    - install
+
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: Create acme.sh group
+      ansible.builtin.group:
+        name: acme.sh
+
+    - name: Create acme.sh user
+      ansible.builtin.user:
+        name: acme.sh
+        group: acme.sh
+
+    - name: Ensure certitficate directory exists
+      ansible.builtin.file:
+        state: directory
+        path: '{{ cert_dir }}'
+        owner: acme.sh
+        group: acme.sh
+        mode: u=rwx,o=rx,g=rx
+
+    - name: Check if there already exists generated certificates
+      ansible.builtin.stat:
+        path: '{{ cert_dir }}/{{ inventory_hostname }}_ecc/{{ inventory_hostname }}.cer'
+      register: tls_certificate
+
+    - name: Check if there already exists generated key
+      ansible.builtin.stat:
+        path: '{{ cert_dir }}/{{ inventory_hostname }}_ecc/{{ inventory_hostname }}.key'
+      register: tls_key
+
+    - name: Issue the first certificate
+      ansible.builtin.shell:
+        cmd: acme.sh --issue --standalone --domain '{{ inventory_hostname }}' --home '{{ cert_dir }}' --server letsencrypt
+      when: not tls_certificate.stat.exists or not tls_key.stat.exists
+
+    - name: Set proper ownership for the certificate created
+      ansible.builtin.file:
+        state: directory
+        path: '{{ cert_dir }}'
+        owner: acme.sh
+        group: acme.sh
+        mode: u=rwx,o=rx,g=rx
+        recurse: yes
+
+    - name: Create systemd service
+      ansible.builtin.template:
+        src: templates/acme-sh.service.j2
+        dest: /usr/local/lib/systemd/system/acme-sh.service
+        mode: u=rw,o=r,g=r
+      register: systemd_service
+
+    - name: Create systemd timer
+      ansible.builtin.copy:
+        src: templates/acme-sh.timer
+        dest: /usr/local/lib/systemd/system/acme-sh.timer
+        mode: u=rw,o=r,g=r
+      register: systemd_timer
+
+    - name: Enable renewal
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+        name: acme-sh.timer
+        state: restarted
+        enabled: true
+      when: systemd_service.changed or systemd_timer.changed
+
+- name: Integrate shadowsocks into the system
+  hosts: servers
+  tags:
+    - shadowsocks
+    - install
+
+  tasks:
+    - name: Create shadowsocks group
+      ansible.builtin.group:
+        name: shadowsocks
+
+    - name: Create shadowsocks user
+      ansible.builtin.user:
+        name: shadowsocks
+        group: shadowsocks
+        groups:
+          # To access generated TLS certificates.
+          - acme.sh
+
+    - name: Create systemd service
+      ansible.builtin.copy:
+        src: templates/shadowsocks.service
+        dest: /usr/local/lib/systemd/system/shadowsocks.service
+        mode: u=rw,o=r,g=r
+      register: systemd_service
+
+    - name: Reload systemd units
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      when: systemd_service.changed
+
+- name: Configure iptables
+  hosts: servers
+  tags:
+    - install
+    - iptables
+
+  tasks:
+    - name: Allow ports 22, 80, and 443 on eth0 INPUT
+      ansible.builtin.iptables:
+        chain: INPUT
+        in_interface: eth0
+        protocol: tcp
+        destination_ports:
+          - 22
+          - 80
+          - 443
+        jump: ACCEPT
+
+    - name: Allow established connections on eth0 INPUT
+      ansible.builtin.iptables:
+        chain: INPUT
+        in_interface: eth0
+        match: conntrack
+        ctstate:
+          - RELATED
+          - ESTABLISHED
+        jump: ACCEPT
+
+    - name: Forbid any other connection on eth0 INPUT
+      ansible.builtin.iptables:
+        chain: INPUT
+        in_interface: eth0
+        jump: DROP
+
+- name: Start shadowsocks
+  hosts: servers
+  tags:
+    - shadowsocks
+    - start
+
+  vars_files:
+    - vars.yml
+    - secrets.yml
+
+  vars:
+    shadowsocks_config:
+      server: "{{ lookup('community.general.dig', inventory_hostname, qtype='A') }}"
+      server_port: 443
+      method: chacha20-ietf-poly1305
+      timeout: 86400
+
+      plugin: xray-plugin
+      plugin_mode: tcp_and_udp
+      plugin_opts: 'server;tls;host={{ inventory_hostname }};path=/wss;cert={{ cert_dir }}/{{ inventory_hostname }}_ecc/fullchain.cer;key={{ cert_dir }}/{{ inventory_hostname }}_ecc/{{ inventory_hostname }}.key'
+
+    shadowsocks_client_config:
+      local_address: '127.0.0.1'
+      local_port: 1080
+      server: "{{ lookup('community.general.dig', inventory_hostname, qtype='A') }}"
+      plugin_opts: 'tls;host={{ inventory_hostname }};path=/wss'
+
+  tasks:
+    - name: Ensure shadowsocks config directory exists
+      ansible.builtin.file:
+        state: directory
+        path: /etc/shadowsocks
+        owner: shadowsocks
+        group: shadowsocks
+        mode: u=rwx,o=,g=
+
+    - name: Set up shadowsocks config
+      ansible.builtin.copy:
+        content: '{{ shadowsocks_config }}'
+        dest: /etc/shadowsocks/config.json
+        owner: shadowsocks
+        group: shadowsocks
+        mode: u=r,o=,g=
+      tags: [ server-config ]
+      register: ss_config_result
+
+    - name: Set up shadowsocks client config
+      ansible.builtin.copy:
+        content: '{{ shadowsocks_config | combine(shadowsocks_client_config) }}'
+        dest: /etc/shadowsocks/client-config.json
+        owner: shadowsocks
+        group: shadowsocks
+        mode: u=r,o=,g=
+      tags: [ client-config ]
+
+    - name: Start shadowsocks systemd unit
+      ansible.builtin.systemd_service:
+        name: shadowsocks.service
+        enabled: yes
+        state: restarted
+      tags: [ server-config ]
+      when: ss_config_result.changed
+
+    - name: Connect URI
+      ansible.builtin.debug:
+        msg: "ss://{{ (shadowsocks_config.method + ':' + shadowsocks_config.password) | b64encode | replace('+', '-') | replace('/', '_') | replace('=', '') }}@{{ inventory_hostname }}:{{ shadowsocks_config.server_port }}?plugin={{ (shadowsocks_config.plugin + ';' + shadowsocks_client_config.plugin_opts) | urlencode | replace('/', '%2F') }}"
+      tags: [ client-config ]
+
+    - name: Pull local shadowsocks config
+      ansible.builtin.synchronize:
+        src: '/etc/shadowsocks/client-config.json'
+        dest: '{{ working_directory }}/client-config.json'
+        mode: pull
+      tags: [ client-config ]
