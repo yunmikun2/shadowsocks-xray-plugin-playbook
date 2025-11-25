@@ -6,10 +6,10 @@ Fill `inventory.ini` with server configuration:
 
 ```ini
 [servers]
-<your-domain-name> working_directory=<client-config-directory>
+<your-domain-name>
 ```
 
-An absolute path specified in place of `<client-config-directory>` will contain client configuration file `client-config.json` after successful deployment.
+It must be a real domain name, and your SSH needs to be configured so that you can connect to the server by simply typing `ssh <your-domain-name>`.
 
 Set connection password in `secrets.yml`:
 
@@ -24,7 +24,17 @@ shadowsocks_config:
 $ ansible-playbook deploy.yml
 ```
 
-The script will install acme.sh
+The script does the following.
+1. Installs acme.sh, issues a TLS certificate for your domain and sets up its renewal.
+2. Sets up and configures shadowsocks with the plugin.
+3. Starts shadowsocks with the configuration provided.
+4. Blocks all the connections to the server except from 22, 80, and 443 ports.
+
+You will see "Connect URI" somewhere in the output. You also can regenerate it by running
+
+```sh
+$ ansible-playbook deploy.yml --tags client-config
+```
 
 ## Usage
 

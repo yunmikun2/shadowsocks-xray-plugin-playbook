@@ -303,15 +303,6 @@
       tags: [ server-config ]
       register: ss_config_result
 
-    - name: Set up shadowsocks client config
-      ansible.builtin.copy:
-        content: '{{ shadowsocks_config | combine(shadowsocks_client_config) }}'
-        dest: /etc/shadowsocks/client-config.json
-        owner: shadowsocks
-        group: shadowsocks
-        mode: u=r,o=,g=
-      tags: [ client-config ]
-
     - name: Start shadowsocks systemd unit
       ansible.builtin.systemd_service:
         name: shadowsocks.service
@@ -323,11 +314,4 @@
     - name: Connect URI
       ansible.builtin.debug:
         msg: "ss://{{ (shadowsocks_config.method + ':' + shadowsocks_config.password) | b64encode | replace('+', '-') | replace('/', '_') | replace('=', '') }}@{{ inventory_hostname }}:{{ shadowsocks_config.server_port }}?plugin={{ (shadowsocks_config.plugin + ';' + shadowsocks_client_config.plugin_opts) | urlencode | replace('/', '%2F') }}"
-      tags: [ client-config ]
-
-    - name: Pull local shadowsocks config
-      ansible.builtin.synchronize:
-        src: '/etc/shadowsocks/client-config.json'
-        dest: '{{ working_directory }}/client-config.json'
-        mode: pull
       tags: [ client-config ]
