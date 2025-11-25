@@ -230,19 +230,33 @@
     - iptables
 
   tasks:
-    - name: Allow ports 22, 80, and 443 on eth0 INPUT
-      ansible.builtin.iptables:
+    - ansible.builtin.iptables:
+        chain: INPUT
+        in_interface: lo
+        jump: ACCEPT
+
+    - ansible.builtin.iptables:
+        chain: INPUT
+        match: conntrack
+        ctstate:
+          - INVALID
+        jump: DROP
+
+    - ansible.builtin.iptables:
+        chain: INPUT
+        in_interface: eth0
+        protocol: icmp
+        jump: ACCEPT
+
+    - ansible.builtin.iptables:
         chain: INPUT
         in_interface: eth0
         protocol: tcp
-        destination_ports:
-          - 22
-          - 80
-          - 443
+        match: multiport
+        destination_port: "22,80,443"
         jump: ACCEPT
 
-    - name: Allow established connections on eth0 INPUT
-      ansible.builtin.iptables:
+    - ansible.builtin.iptables:
         chain: INPUT
         in_interface: eth0
         match: conntrack
@@ -251,11 +265,22 @@
           - ESTABLISHED
         jump: ACCEPT
 
-    - name: Forbid any other connection on eth0 INPUT
-      ansible.builtin.iptables:
+    - ansible.builtin.iptables:
+        chain: '{{ item }}'
+        policy: DROP
+      with_items:
+        - INPUT
+        - FORWARD
+
+    - ansible.builtin.iptables:
+        chain: OUTPUT
+        policy: ACCEPT
+
+    - ansible.builtin.iptables:
         chain: INPUT
-        in_interface: eth0
-        jump: DROP
+        protocol: tcp
+        jump: REJECT
+        reject_with: tcp-reset
 
 - name: Start shadowsocks
   hosts: servers
